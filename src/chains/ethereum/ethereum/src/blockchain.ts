@@ -1153,6 +1153,7 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
     contractAddress?: Buffer
   ): Promise<TraceTransactionResult> => {
     let currentDepth = -1;
+    const storageStackAddresses: EthereumJsAddress[] = [];
     const storageStack: TraceStorageMap[] = [];
 
     const blocks = this.blocks;
@@ -1257,8 +1258,10 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
         const { depth: eventDepth } = event;
         if (currentDepth > eventDepth) {
           storageStack.pop();
+          storageStackAddresses.pop();
         } else if (currentDepth < eventDepth) {
           storageStack.push(new TraceStorageMap());
+          storageStackAddresses.push(event.address);
         }
 
         currentDepth = eventDepth;
@@ -1277,7 +1280,11 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
 
             // assign after callback because this storage change actually takes
             // effect _after_ this opcode executes
-            storageStack[eventDepth].set(key, value);
+            for (let i = 0; i <= eventDepth; i++) {
+              if (storageStackAddresses[i].equals(event.address)) {
+                storageStack[i].set(key, value);
+              }
+            }
             break;
           }
           case "SLOAD": {
