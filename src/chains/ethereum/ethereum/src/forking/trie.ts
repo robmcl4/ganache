@@ -154,24 +154,14 @@ export class ForkTrie extends GanacheTrie {
   async del(key: Buffer) {
     await this.lock.wait();
 
-    // we only track if the key was deleted (locally) for state tries _after_
-    // the fork block because we can't possibly delete keys _before_ the fork
-    // block, since those happened before ganache was even started
-    // This little optimization can cut debug_traceTransaction time _in half_.
-    if (!this.isPreForkBlock) {
-      const delKey = this.createDelKey(key);
-      const metaDataPutPromise = this.metadata.put(delKey, DELETED_VALUE);
+    const delKey = this.createDelKey(key);
+    const metaDataPutPromise = this.metadata.put(delKey, DELETED_VALUE);
 
-      const hash = keccak(key);
-      const { node, stack } = await this.findPath(hash);
-      if (node) await this._deleteNode(hash, stack);
+    const hash = keccak(key);
+    const { node, stack } = await this.findPath(hash);
+    if (node) await this._deleteNode(hash, stack);
 
-      await metaDataPutPromise;
-    } else {
-      const hash = keccak(key);
-      const { node, stack } = await this.findPath(hash);
-      if (node) await this._deleteNode(hash, stack);
-    }
+    await metaDataPutPromise;
 
     this.lock.signal();
   }
@@ -259,13 +249,7 @@ export class ForkTrie extends GanacheTrie {
     const value = await super.get(key);
     if (value != null) return value;
 
-    // since we don't have this key in our local trie check if we've have
-    // deleted it (locally)
-    // we only check if the key was deleted (locally) for state tries _after_
-    // the fork block because we can't possibly delete keys _before_ the fork
-    // block, since those happened before ganache was even started
-    // This little optimization can cut debug_traceTransaction time _in half_.
-    if (!this.isPreForkBlock && (await this.keyWasDeleted(key))) return null;
+    if (await this.keyWasDeleted(key)) return null;
 
     if (this.address === null) {
       // if the trie context's address isn't set, our key represents an address:
