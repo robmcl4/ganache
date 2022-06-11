@@ -1322,6 +1322,7 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
     // It's possible we've removed handling specific cases in this implementation.
     // e.g., the previous incantation of RuntimeError
     await vm.stateManager.checkpoint();
+    let measuredGasUsage = null;
     try {
       for (let i = 0, l = newBlock.transactions.length; i < l; i++) {
         const tx = newBlock.transactions[i] as any;
@@ -1356,7 +1357,8 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
         this.emit("ganache:vm:tx:before", {
           context: transactionEventContext
         });
-        await vm.runTx({ tx, block: newBlock as any });
+        const result = await vm.runTx({ tx, block: newBlock as any });
+        measuredGasUsage = result.gasUsed.toNumber();
         this.emit("ganache:vm:tx:after", {
           context: transactionEventContext
         });
@@ -1368,7 +1370,7 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
 
     // send state results back
     return {
-      gas,
+      gas: measuredGasUsage,
       structLogs,
       returnValue: "",
       storage
