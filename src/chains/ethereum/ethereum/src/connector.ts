@@ -46,7 +46,7 @@ export class Connector<
 {
   #provider: EthereumProvider;
 
-  static BUFFERIFY_THRESHOLD: number = 100000;
+  static BUFFERIFY_THRESHOLD: number = 1000;
 
   get provider() {
     return this.#provider;
