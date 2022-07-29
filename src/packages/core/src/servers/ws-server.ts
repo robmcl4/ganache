@@ -74,7 +74,7 @@ export type WebsocketServerOptions = Pick<
   "wsBinary" | "rpcEndpoint" | "chunkSize"
 >;
 
-export const MAX_PAYLOAD_SIZE = 1024 * 1024 * 1024 * 1024;
+export const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024 * 1024;
 
 export default class WebsocketServer {
   #connections = new Map<WebSocket, Set<() => void>>();
