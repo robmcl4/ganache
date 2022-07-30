@@ -46,6 +46,9 @@ import { Address } from "@ganache/ethereum-address";
 import { GanacheRawBlock } from "@ganache/ethereum-block";
 import { Capacity } from "./miner/miner";
 import { Ethereum } from "./api-types";
+import { bufferify } from './helpers/bufferify'
+
+import * as fs from 'fs';
 
 async function autofillDefaultTransactionValues(
   tx: TypedTransaction,
@@ -2841,6 +2844,38 @@ export default class EthereumApi implements Api {
     options?: Ethereum.TraceTransactionOptions
   ): Promise<Ethereum.TraceTransactionResult<"private">> {
     return this.#blockchain.traceTransaction(transactionHash, options || {});
+  }
+
+  async debug_traceTransactionToFile(
+    transactionHash: DATA,
+    options?: Ethereum.TraceTransactionOptions
+  ): Promise<string> {
+    let fname = options['file_name'];
+    let ret = await this.#blockchain.traceTransaction(transactionHash, options || {});
+    let buf = Buffer.alloc(10 * 1024 * 1024);
+    let bufIdx = 0;
+
+    let fout = await fs.promises.open(fname, 'w');
+    for (let chunk of bufferify(ret, "")) {
+      if (chunk.length + bufIdx > buf.length) {
+        // flush
+        await fout.write(buf, 0, bufIdx);
+        bufIdx = 0;
+      }
+      if (chunk.length > buf.length) {
+        await fout.write(chunk);
+      }
+      else {
+        chunk.copy(buf, bufIdx);
+        bufIdx += chunk.length;
+      }
+    }
+    if (bufIdx > 0) {
+      // flush
+      await fout.write(buf, 0, bufIdx);
+    }
+    await fout.close();
+    return 'OK';
   }
 
   // TODO: example doesn't return correct value
