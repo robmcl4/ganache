@@ -1144,6 +1144,300 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
     }
   }
 
+  public async callTrace(
+    transactionHash: string,
+    options: TraceTransactionOptions
+  ) {
+    const transactionHashBuffer = Data.toBuffer(transactionHash);
+    // #1 - get block via transaction object
+    const transaction = await this.transactions.get(transactionHashBuffer);
+
+    if (!transaction) {
+      throw new Error("Unknown transaction " + transactionHash);
+    }
+
+    const targetBlock = await this.blocks.getByHash(
+      transaction.blockHash.toBuffer()
+    );
+    const parentBlock = await this.blocks.getByHash(
+      targetBlock.header.parentHash.toBuffer()
+    );
+
+    const newBlock = this.#prepareNextBlock(
+      targetBlock,
+      parentBlock,
+      transactionHashBuffer
+    );
+
+    // #2 - Set state root of original block
+    //
+    // TODO: Forking needs the forked block number passed during this step:
+    // https://github.com/trufflesuite/ganache/blob/develop/lib/blockchain_double.js#L917
+    const trie = this.trie.copy();
+    trie.setContext(
+      parentBlock.header.stateRoot.toBuffer(),
+      null,
+      parentBlock.header.number
+    );
+
+    // #3 - Rerun every transaction in block prior to and including the requested transaction
+    return this.#traceTransactionCallTracer(
+        newBlock.transactions[transaction.index.toNumber()],
+        trie,
+        newBlock,
+        options
+      );
+  }
+
+  #traceTransactionCallTracer = async (
+    transaction: VmTransaction,
+    trie: GanacheTrie,
+    newBlock: RuntimeBlock & { transactions: VmTransaction[] },
+    options: TraceTransactionOptions,
+    keys?: Buffer[],
+    contractAddress?: Buffer
+  ): Promise<any> => {
+    let currentDepth = -1;
+    const storageStackAddresses: EthereumJsAddress[] = [];
+    const storageStack: TraceStorageMap[] = [];
+
+    const blocks = this.blocks;
+    // ethereumjs vm doesn't use the callback style anymore
+    const blockchain = {
+      getBlock: async (number: BN) => {
+        const block = await blocks.get(number.toBuffer()).catch(_ => null);
+        return block ? { hash: () => block.hash().toBuffer() } : null;
+      }
+    } as any;
+
+    const common = this.fallback
+      ? this.fallback.getCommonForBlockNumber(
+          this.common,
+          BigInt(newBlock.header.number.toString())
+        )
+      : this.common;
+
+    const vm = await VM.create({
+      state: trie,
+      activatePrecompiles: false,
+      common,
+      allowUnlimitedContractSize: this.vm.allowUnlimitedContractSize,
+      blockchain,
+      stateManager: this.fallback
+        ? new ForkStateManager({ common, trie: trie as ForkTrie })
+        : new DefaultStateManager({ common, trie: trie })
+    });
+
+    const storage: StorageRecords = {};
+
+    // TODO: gas could go theoretically go over Number.MAX_SAFE_INTEGER.
+    // (Ganache v2 didn't handle this possibility either, so it hasn't been
+    // updated yet)
+    let gas = 0;
+    const structLogs: Array<StructLog> = [];
+    const TraceData = TraceDataFactory();
+
+    const transactionEventContext = {};
+
+    const rootCtx = {
+        'type': 'root',
+        'from': transaction.getSenderAddress().buf.toString('hex'),
+        'callee': transaction.to.buf.toString('hex'),
+        'actions': [],
+    }
+
+    const ctxStack = [rootCtx];
+    let ctx = rootCtx;
+
+    const stepListener = async (
+      event: InterpreterStep,
+      next: (error?: any, cb?: any) => void
+    ) => {
+      // See these docs:
+      // https://github.com/ethereum/go-ethereum/wiki/Management-APIs
+      if (this.#emitStepEvent) {
+        this.emit(
+          "ganache:vm:tx:step",
+          makeStepEvent(transactionEventContext, event)
+        );
+      }
+
+      if (event.depth == ctxStack.length - 1) {
+        console.log('stack desync' + event.depth + ' ' + ctxStack.length);
+        console.log('op', event.opcode);
+        // we just ran out of gas
+        ctx['actions'].push({'type': 'OUT-OF-GAS'});
+        ctx = ctxStack.pop();
+      }
+
+      if (event.opcode.name == 'REVERT') {
+        let mem_offset    = event.stack[event.stack.length - 1];
+        let mem_len       = event.stack[event.stack.length - 2];
+        let payload       = event.memory.slice(mem_offset.toNumber(), (mem_offset.add(mem_len)).toNumber());
+        let reason_offset = new BN(payload.slice(4, 36));
+        let reason_len    = new BN(payload.slice(36, 68));
+        let message       = event.memory.slice(reason_offset.toNumber(), (reason_offset.add(reason_len)).toNumber());
+        ctx['actions'].push({
+          type: 'REVERT',
+          message: message.toString('hex'),
+        });
+        ctx = ctxStack.pop();
+      }
+      else if (event.opcode.name == 'STOP') {
+        ctx = ctxStack.pop();
+      }
+      else if (event.opcode.name == 'RETURN') {
+        let ret_offset = event.stack[event.stack.length - 1];
+        let ret_len    = event.stack[event.stack.length - 2];
+        let ret        = event.memory.slice(ret_offset.toNumber(), (ret_offset.add(ret_len)).toNumber());
+        ctx['actions'].push({
+          type: 'RETURN',
+          data: ret.toString('hex')
+        });
+        ctx = ctxStack.pop();
+      }
+      else if (event.opcode.name == 'STATICCALL') {
+        let dest       = event.stack[event.stack.length - 2].toBuffer()
+        let arg_offset = event.stack[event.stack.length - 3];
+        let arg_len    = event.stack[event.stack.length - 4];
+        let args       = event.memory.slice(arg_offset.toNumber(), (arg_offset.add(arg_len)).toNumber());
+        // dest = '0x' + sl['stack'][-2].replace('0x', '').lstrip('0').rjust(40, '0')
+        // arg_offset = int(sl['stack'][-3], base=16)
+        // arg_len = int(sl['stack'][-4], base=16)
+        // b = read_mem(arg_offset, arg_len, sl['memory'])
+        ctx['actions'].push({
+            'type': 'STATICCALL',
+            'callee': dest.toString('hex'),
+            'from': event.address.buf.toString('hex'),
+            'args': args.toString('hex'),
+            'actions': []
+        });
+        ctxStack.push(ctx);
+        ctx = ctx['actions'][ctx['actions'].length - 1];
+      }
+      else if (event.opcode.name == 'DELEGATECALL') {
+        let dest       = event.stack[event.stack.length - 2].toBuffer()
+        let arg_offset = event.stack[event.stack.length - 4];
+        let arg_len    = event.stack[event.stack.length - 5];
+        let args       = event.memory.slice(arg_offset.toNumber(), (arg_offset.add(arg_len)).toNumber());
+        // dest = '0x' + sl['stack'][-2].replace('0x', '').lstrip('0').rjust(40, '0')
+        // arg_offset = int(sl['stack'][-3], base=16)
+        // arg_len = int(sl['stack'][-4], base=16)
+        // b = read_mem(arg_offset, arg_len, sl['memory'])
+        ctx['actions'].push({
+            'type': 'DELEGATECALL',
+            'callee': dest.toString('hex'),
+            'from': event.address.buf.toString('hex'),
+            'args': args.toString('hex'),
+            'actions': []
+        });
+        ctxStack.push(ctx);
+        ctx = ctx['actions'][ctx['actions'].length - 1];
+      }
+      else if (event.opcode.name == 'CALL') {
+        let dest       = event.stack[event.stack.length - 2].toBuffer()
+        let arg_offset = event.stack[event.stack.length - 4];
+        let arg_len    = event.stack[event.stack.length - 5];
+        let args       = event.memory.slice(arg_offset.toNumber(), (arg_offset.add(arg_len)).toNumber());
+        // dest = '0x' + sl['stack'][-2].replace('0x', '').lstrip('0').rjust(40, '0')
+        // arg_offset = int(sl['stack'][-3], base=16)
+        // arg_len = int(sl['stack'][-4], base=16)
+        // b = read_mem(arg_offset, arg_len, sl['memory'])
+        ctx['actions'].push({
+            'type': 'CALL',
+            'callee': dest.toString('hex'),
+            'from': event.address.buf.toString('hex'),
+            'args': args.toString('hex'),
+            'actions': []
+        });
+        ctxStack.push(ctx);
+        ctx = ctx['actions'][ctx['actions'].length - 1];
+      }
+      else if (event.opcode.name == 'LOG3' && event.stack.length >= 3 && event.stack[event.stack.length - 3].toBuffer().toString('hex') == 'ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef') {
+        let from_    = event.stack[event.stack.length - 4].toBuffer();
+        let to_      = event.stack[event.stack.length - 5].toBuffer();
+        let argstart = event.stack[event.stack.length - 1];
+        let arglen   = event.stack[event.stack.length - 2];
+        let payload  = event.memory.subarray(argstart.toNumber(), (argstart.add(arglen)).toNumber());
+
+        ctx['actions'].push({
+          'type': 'TRANSFER',
+          'from': from_.toString('hex'),
+          'to':   to_.toString('hex'),
+          'value': payload.toString('hex'),
+        });
+      }
+      next();
+    };
+
+    // Don't even let the vm try to flush the block's _cache to the stateTrie.
+    // When forking some of the data that the traced function may request will
+    // exist only on the main chain. Because we pretty much lie to the VM by
+    // telling it we DO have data in our Trie, when we really don't, it gets
+    // lost during the commit phase when it traverses the "borrowed" datum's
+    // trie (as it may not have a valid root). Because this is a trace, and we
+    // don't need to commit the data, duck punching the `flush` method (the
+    // simplest method I could find) is fine.
+    // Remove this and you may see the infamous
+    // `Uncaught TypeError: Cannot read property 'pop' of undefined` error!
+    (vm.stateManager as any)._cache.flush = () => {};
+
+    // Process the block without committing the data.
+    // The vmerr key on the result appears to be removed.
+    // The previous implementation had specific error handling.
+    // It's possible we've removed handling specific cases in this implementation.
+    // e.g., the previous incantation of RuntimeError
+    await vm.stateManager.checkpoint();
+    let measuredGasUsage = null;
+    try {
+      for (let i = 0, l = newBlock.transactions.length; i < l; i++) {
+        const tx = newBlock.transactions[i] as any;
+        if (tx === transaction) {
+          if (keys && contractAddress) {
+            const database = this.#database;
+            const ejsContractAddress = { buf: contractAddress } as any;
+            await Promise.all(
+              keys.map(async key => {
+                // get the raw key using the hashed key
+                const rawKey = await database.storageKeys.get(key);
+
+                const result = await vm.stateManager.getContractStorage(
+                  ejsContractAddress,
+                  rawKey
+                );
+
+                storage[Data.toString(key, key.length)] = {
+                  key: Data.from(rawKey, rawKey.length),
+                  value: Data.from(result, 32)
+                };
+              })
+            );
+            break;
+          } else {
+            vm.on("step", stepListener);
+            // force the loop to break after running this transaction by setting
+            // the current iteration past the end
+            i = l;
+          }
+        }
+        this.emit("ganache:vm:tx:before", {
+          context: transactionEventContext
+        });
+        const result = await vm.runTx({ tx, block: newBlock as any });
+        measuredGasUsage = result.gasUsed.toNumber();
+        this.emit("ganache:vm:tx:after", {
+          context: transactionEventContext
+        });
+      }
+      vm.removeListener("step", stepListener);
+    } finally {
+      await vm.stateManager.revert();
+    }
+
+    // send state results back
+    return rootCtx;
+  };
+
   #traceTransaction = async (
     transaction: VmTransaction,
     trie: GanacheTrie,

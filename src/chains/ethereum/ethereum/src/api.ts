@@ -2846,6 +2846,13 @@ export default class EthereumApi implements Api {
     return this.#blockchain.traceTransaction(transactionHash, options || {});
   }
 
+  async debug_callTrace(
+    transactionHash: DATA,
+    options?: Ethereum.TraceTransactionOptions
+  ): Promise<any> {
+    return this.#blockchain.callTrace(transactionHash, options || {});
+  }
+
   async debug_traceTransactionToFile(
     transactionHash: DATA,
     options?: Ethereum.TraceTransactionOptions
