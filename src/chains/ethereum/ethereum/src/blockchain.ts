@@ -1276,10 +1276,7 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
         let payload       = event.memory.slice(mem_offset.toNumber(), (mem_offset.add(mem_len)).toNumber());
         let reason_offset = new BN(payload.slice(4, 36)).add(new BN(4 + 32));
         let reason_len    = new BN(payload.slice(36, 68));
-        console.log('processing revert...');
-        console.log(reason_offset);
-        console.log(reason_len);
-        let message       = event.memory.slice(reason_offset.toNumber(), (reason_offset.add(reason_len)).toNumber());
+        let message       = payload.slice(reason_offset.toNumber(), (reason_offset.add(reason_len)).toNumber());
         ctx['actions'].push({
           type: 'REVERT',
           message: message.toString('hex'),
