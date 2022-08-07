@@ -1262,7 +1262,9 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
         );
       }
 
-      if (event.depth == ctxStack.length - 1) {
+      if (ctxStack.length == 0) {console.error('ctx stack empty')}
+
+      if (event.depth + 1 == ctxStack.length - 1) {
         console.log('stack desync' + event.depth + ' ' + ctxStack.length);
         console.log('op', event.opcode);
         // we just ran out of gas
