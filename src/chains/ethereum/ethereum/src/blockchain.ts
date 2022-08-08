@@ -48,7 +48,9 @@ import {
   calculateIntrinsicGas,
   InternalTransactionReceipt,
   VmTransaction,
-  TypedTransaction
+  TypedTransaction,
+  TransactionFactory,
+  Transaction
 } from "@ganache/ethereum-transaction";
 import { Block, RuntimeBlock, Snapshots } from "@ganache/ethereum-block";
 import {
@@ -1016,6 +1018,107 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
           throw error;
       }
       return hash;
+    }
+  }
+
+  public async callAtFront(
+    transactionHash: string,
+  ): Promise<EVMResult> {
+    const transactionHashBuffer = Data.from(transactionHash).toBuffer();
+    // #1 - get block via transaction object
+    const transaction = await this.transactions.get(transactionHashBuffer);
+
+    if (!transaction) {
+      throw new Error("Unknown transaction " + transactionHash);
+    }
+
+    const targetBlock = await this.blocks.getByHash(
+      transaction.blockHash.toBuffer()
+    );
+    const parentBlock = await this.blocks.getByHash(
+      targetBlock.header.parentHash.toBuffer()
+    );
+
+    const newBlock = this.#prepareNextBlock(
+      targetBlock,
+      parentBlock,
+      transactionHashBuffer
+    );
+
+    // delete transactions ahead of the one we're moving to the top
+    newBlock.transactions.splice(0, newBlock.transactions.length - 1);
+
+    // #2 - Set state root of original block
+    //
+    // TODO: Forking needs the forked block number passed during this step:
+    // https://github.com/trufflesuite/ganache/blob/develop/lib/blockchain_double.js#L917
+    const trie = this.trie.copy();
+    trie.setContext(
+      parentBlock.header.stateRoot.toBuffer(),
+      null,
+      parentBlock.header.number
+    );
+
+    const blocks = this.blocks;
+    // ethereumjs vm doesn't use the callback style anymore
+    const blockchain = {
+      getBlock: async (number: BN) => {
+        const block = await blocks.get(number.toBuffer()).catch(_ => null);
+        return block ? { hash: () => block.hash().toBuffer() } : null;
+      }
+    } as any;
+
+    const common = this.fallback
+      ? this.fallback.getCommonForBlockNumber(
+          this.common,
+          BigInt(targetBlock.header.number.toString())
+        )
+      : this.common;
+
+    const vm = await VM.create({
+      state: trie,
+      activatePrecompiles: false,
+      common,
+      allowUnlimitedContractSize: this.vm.allowUnlimitedContractSize,
+      blockchain,
+      stateManager: this.fallback
+        ? new ForkStateManager({ common, trie: trie as ForkTrie })
+        : new DefaultStateManager({ common, trie: trie })
+    });
+
+    const storage: StorageRecords = {};
+
+    // const stepListener = async (
+    //   event: InterpreterStep,
+    //   next: (error?: any, cb?: any) => void
+    // ) => {
+    //   // do nothing
+    //   }
+    // };
+
+    // Don't even let the vm try to flush the block's _cache to the stateTrie.
+    // When forking some of the data that the traced function may request will
+    // exist only on the main chain. Because we pretty much lie to the VM by
+    // telling it we DO have data in our Trie, when we really don't, it gets
+    // lost during the commit phase when it traverses the "borrowed" datum's
+    // trie (as it may not have a valid root). Because this is a trace, and we
+    // don't need to commit the data, duck punching the `flush` method (the
+    // simplest method I could find) is fine.
+    // Remove this and you may see the infamous
+    // `Uncaught TypeError: Cannot read property 'pop' of undefined` error!
+    (vm.stateManager as any)._cache.flush = () => {};
+
+    // Process the block without committing the data.
+    // The vmerr key on the result appears to be removed.
+    // The previous implementation had specific error handling.
+    // It's possible we've removed handling specific cases in this implementation.
+    // e.g., the previous incantation of RuntimeError
+    await vm.stateManager.checkpoint();
+    let measuredGasUsage = null;
+    try {
+      return await vm.runTx({ tx: newBlock.transactions[0] as any, block: newBlock as any, skipNonce: true });
+    } finally {
+      await vm.stateManager.revert();
     }
   }
 

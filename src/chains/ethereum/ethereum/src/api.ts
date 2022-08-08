@@ -2785,6 +2785,24 @@ export default class EthereumApi implements Api {
       overrides
     );
   }
+
+
+  @assertArgLength(1)
+  async eth_callAtFront(
+    transactionHash: DATA,
+  ): Promise<{logs: {address: string, indexes: string[], payload: string}[], gasUsed: string, exception: string}> {
+    const result = await this.#blockchain.callAtFront(transactionHash);
+    const logs = [];
+    for (const log of result.execResult.logs) {
+      logs.push({
+        address: log[0].toString('hex'),
+        indexes: log[1].map(x => x.toString('hex')),
+        payload: log[2].toString('hex'),
+      });
+    }
+    return { logs, gasUsed: result.gasUsed.toString('hex'), exception: result.execResult.exceptionError ? result.execResult.exceptionError.error : null };
+  }
+
   //#endregion
 
   //#region debug
