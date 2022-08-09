@@ -1401,6 +1401,17 @@ export default class Blockchain extends Emittery<BlockchainTypedEvents> {
         });
         ctx = ctxStack.pop();
       }
+      else if (event.opcode.name == 'CREATE' || event.opcode.name == 'CREATE2') {
+        ctx['actions'].push({
+          'type': event.opcode.name,
+          'callee': 'UNKNOWN',
+          'from': event.address.buf.toString('hex'),
+          'args': '',
+          'actions': []
+        });
+        ctxStack.push(ctx);
+        ctx = ctx['actions'][ctx['actions'].length - 1];
+      }
       else if (event.opcode.name == 'STATICCALL') {
         let dest       = event.stack[event.stack.length - 2].toBuffer()
         let arg_offset = event.stack[event.stack.length - 3];
