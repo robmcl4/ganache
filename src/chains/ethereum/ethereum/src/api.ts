@@ -2793,7 +2793,7 @@ export default class EthereumApi implements Api {
   ): Promise<{logs: {address: string, indexes: string[], payload: string}[], gasUsed: string, exception: string}> {
     const result = await this.#blockchain.callAtFront(transactionHash);
     const logs = [];
-    for (const log of result.execResult.logs) {
+    for (const log of (result.execResult.logs || [])) {
       logs.push({
         address: log[0].toString('hex'),
         indexes: log[1].map(x => x.toString('hex')),
