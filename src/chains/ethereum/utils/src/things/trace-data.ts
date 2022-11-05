@@ -91,7 +91,11 @@ export const TraceDataFactory = () => {
             return str;
           }
           // convert a hex key like "ab01" into "00...00ab01"
-          return (str = `${PREFIXES[BYTE_LENGTH - key.length / 2]}${key}`);
+          // return (str = `${PREFIXES[BYTE_LENGTH - key.length / 2]}${key}`);
+          if (key.length === 0) {
+              return '00';
+          }
+          return (str = `${key}`);
         }
       };
 

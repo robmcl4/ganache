@@ -74,8 +74,7 @@ export type WebsocketServerOptions = Pick<
   "wsBinary" | "rpcEndpoint" | "chunkSize"
 >;
 
-// matches geth's limit of 15 MebiBytes: https://github.com/ethereum/go-ethereum/blob/3526f690478482a02a152988f4d31074c176b136/rpc/websocket.go#L40
-export const MAX_PAYLOAD_SIZE = 15 * 1024 * 1024;
+export const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024 * 1024;
 
 export default class WebsocketServer {
   #connections = new Map<WebSocket, Set<() => void>>();
@@ -91,7 +90,7 @@ export default class WebsocketServer {
       /* WS Options */
 
       maxPayloadLength: MAX_PAYLOAD_SIZE,
-      idleTimeout: 120, // in seconds
+      idleTimeout: 10 * 60, // in seconds
 
       // Note that compression is disabled (the default option)
       // due to not being able to link against electron@12
